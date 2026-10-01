@@ -15,9 +15,10 @@ import (
 )
 
 type options struct {
-	address       string
-	dataDirectory string
-	webDirectory  string
+	address          string
+	dataDirectory    string
+	webDirectory     string
+	notifyConfigPath string
 }
 
 func parseOptions() options {
@@ -25,6 +26,7 @@ func parseOptions() options {
 	flag.StringVar(&value.address, "address", "127.0.0.1:19696", "HTTP listen address")
 	flag.StringVar(&value.dataDirectory, "data", "var/lockflow", "journal data directory")
 	flag.StringVar(&value.webDirectory, "web", "web", "web asset directory")
+	flag.StringVar(&value.notifyConfigPath, "notify-config", "", "duty notification routing config (defaults to built-in duty table)")
 	flag.Parse()
 	return value
 }
@@ -40,7 +42,7 @@ func run() error {
 	configuration := parseOptions()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	runtime, err := api.NewRuntime(ctx, configuration.dataDirectory)
+	runtime, err := api.NewRuntime(ctx, configuration.dataDirectory, configuration.notifyConfigPath)
 	if err != nil {
 		return err
 	}

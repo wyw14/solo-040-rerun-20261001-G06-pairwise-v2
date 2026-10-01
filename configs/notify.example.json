@@ -1,0 +1,20 @@
+{
+  "recipients": [
+    {
+      "id": "duty-critical",
+      "name": "Duty engineer (24/7 pager)",
+      "kind": "webhook",
+      "target": "https://oncall.example.com/lockflow/hooks/critical"
+    },
+    {
+      "id": "duty-ops",
+      "name": "Operations desk",
+      "kind": "webhook",
+      "target": "https://oncall.example.com/lockflow/hooks/ops"
+    }
+  ],
+  "routes": [
+    {"chamber_id": "*", "min_severity": "critical", "recipient_id": "duty-critical"},
+    {"chamber_id": "*", "min_severity": "notice", "recipient_id": "duty-ops"}
+  ]
+}

@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"log/slog"
+	"path/filepath"
 	"time"
 
 	"github.com/wyw14/cry-96/internal/admission"
@@ -13,6 +15,7 @@ import (
 	"github.com/wyw14/cry-96/internal/lease"
 	"github.com/wyw14/cry-96/internal/model"
 	"github.com/wyw14/cry-96/internal/monitor"
+	"github.com/wyw14/cry-96/internal/notify"
 	"github.com/wyw14/cry-96/internal/safety"
 	"github.com/wyw14/cry-96/internal/schedule"
 	"github.com/wyw14/cry-96/internal/signal"
@@ -39,6 +42,7 @@ type Runtime struct {
 	Leases          *lease.Service
 	LeaseSweeper    *lease.Sweeper
 	Safety          *safety.Service
+	Notify          *notify.Service
 	Snapshot        *monitor.Snapshot
 	Incidents       *monitor.IncidentReview
 	Health          *monitor.HealthRegistry
@@ -47,12 +51,15 @@ type Runtime struct {
 	Now             func() time.Time
 }
 
-func NewRuntime(ctx context.Context, dataDirectory string) (*Runtime, error) {
+func NewRuntime(ctx context.Context, dataDirectory, notifyConfigPath string) (*Runtime, error) {
 	now := time.Now
-	store, err := journal.NewRuntimeStore(dataDirectory)
+	baseStore, err := journal.NewRuntimeStore(dataDirectory)
 	if err != nil {
 		return nil, err
 	}
+	// The decorator feeds durable events into the notification outbox while
+	// keeping notification failures isolated from safety actions.
+	store := notify.NewJournalStore(baseStore, slog.Default())
 	recorder := journal.NewRecorder(store, now)
 	chambers := []string{"chamber-1", "chamber-2"}
 	gateState := gate.NewState(chambers...)
@@ -97,6 +104,29 @@ func NewRuntime(ctx context.Context, dataDirectory string) (*Runtime, error) {
 	if _, err := recovery.RestoreAll(ctx); err != nil {
 		return nil, err
 	}
+
+	// Notification outbox: own durable store under the data directory, routed
+	// by chamber and severity to configured duty recipients. Existing journal
+	// events are backfilled idempotently before the live hook is bound, so a
+	// restart never loses or duplicates notifications.
+	configPath := filepath.Clean(notifyConfigPath)
+	if configPath == "." {
+		configPath = ""
+	}
+	notifyConfig, err := notify.LoadConfig(configPath)
+	if err != nil {
+		return nil, err
+	}
+	outbox, err := notify.NewRuntimeStore(dataDirectory)
+	if err != nil {
+		return nil, err
+	}
+	notifyService := notify.NewService(outbox, notifyConfig, nil, now, slog.Default())
+	if err := notifyService.BootstrapFromJournal(ctx, baseStore); err != nil {
+		return nil, err
+	}
+	store.BindHook(notifyService)
+	go notifyService.Run(ctx)
 	health := monitor.NewHealthRegistry()
 	for _, chamberID := range chambers {
 		for _, device := range []model.DeviceKind{
@@ -114,6 +144,7 @@ func NewRuntime(ctx context.Context, dataDirectory string) (*Runtime, error) {
 		Planner: planner, Schedule: scheduleService, Hydraulics: hydraulicsController,
 		Interlocks: interlockCoordinator, Cycles: cycleCoordinator, CycleService: cycleService,
 		Leases: leaseService, LeaseSweeper: leaseSweeper, Safety: safetyService,
+		Notify:    notifyService,
 		Snapshot:  monitor.NewSnapshot(cycleCoordinator, gateState, admissionService, signalService, safetyService, now),
 		Incidents: monitor.NewIncidentReview(store), Health: health, Recovery: recovery,
 		Chambers: chambers, Now: now,

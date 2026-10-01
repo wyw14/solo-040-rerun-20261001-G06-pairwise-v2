@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LockFlow Notifications</title><link rel="stylesheet" href="/assets/styles.css"></head>
+<body><header><div class="brand"><span class="brand-mark">LF</span>LockFlow</div><nav><a href="/operations">Operations</a><a href="/chamber">Chamber</a><a href="/interlocks">Interlocks</a><a href="/incidents">Incidents</a><a aria-current="page" href="/notifications">Notifications</a></nav></header>
+<main><div class="page-title"><div><h1>Duty notifications</h1><div class="muted">Outbox addressed by chamber and severity, with the full delivery ledger</div></div><button id="refresh">Refresh</button></div>
+<section class="panel wide"><h2>Pending</h2><table><thead><tr><th>Severity</th><th>Chamber</th><th>Summary</th><th>Recipient</th><th>Attempts</th><th>Next attempt</th><th>Source event</th><th></th></tr></thead><tbody id="pending"></tbody></table></section>
+<section class="panel wide"><h2>Delivery records</h2><table><thead><tr><th>Status</th><th>Severity</th><th>Chamber</th><th>Summary</th><th>Recipient</th><th>Attempts</th><th>Updated</th><th>Source event</th><th></th></tr></thead><tbody id="records"></tbody></table></section>
+<section class="panel wide" id="attempts-panel" hidden><h2>Delivery attempts <span class="muted" id="attempts-title"></span></h2><table><thead><tr><th>#</th><th>When</th><th>Result</th><th>HTTP</th><th>Duration</th><th>Error</th></tr></thead><tbody id="attempts"></tbody></table></section>
+<div class="message" id="message"></div></main>
+<script src="/assets/app.js"></script><script>
+const {api,shortID,setMessage}=window.LockFlow;
+const pendingBody=document.querySelector('#pending');const recordsBody=document.querySelector('#records');
+const attemptsPanel=document.querySelector('#attempts-panel');const attemptsBody=document.querySelector('#attempts');
+const attemptsTitle=document.querySelector('#attempts-title');const message=document.querySelector('#message');
+const fmt=(value)=>value?new Date(value).toLocaleString():'-';
+const statusClass=(status)=>status==='succeeded'?'':(status==='dead'?'critical':'warning');
+const esc=(value)=>String(value??'').replace(/[&<>"]/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function pendingRow(n){return `<tr><td><span class="status ${n.severity}">${n.severity}</span></td><td>${n.chamber_id}</td><td>${esc(n.summary)}</td><td>${esc(n.recipient_name)}</td><td>${n.attempt_count}/${n.max_attempts}</td><td>${fmt(n.next_attempt_at)}</td><td title="${n.source_event_id}">${shortID(n.source_event_id)}</td><td><button data-attempts="${n.id}">Ledger</button></td></tr>`;}
+function recordRow(n){const retry=n.status==='dead'?`<button data-reprocess="${n.id}">Requeue</button>`:'';return `<tr><td><span class="status ${statusClass(n.status)}">${n.status}</span></td><td>${n.severity}</td><td>${n.chamber_id}</td><td>${esc(n.summary)}</td><td>${esc(n.recipient_name)}</td><td>${n.attempt_count}/${n.max_attempts}</td><td>${fmt(n.updated_at)}</td><td title="${n.source_event_id}">${shortID(n.source_event_id)}</td><td><button data-attempts="${n.id}">Ledger</button> ${retry}</td></tr>`;}
+async function load(){
+  const [pending,records]=await Promise.all([api('/api/notifications?status=pending'),api('/api/notifications')]);
+  pendingBody.innerHTML=pending.map(pendingRow).join('')||'<tr><td colspan="8" class="muted">Nothing pending</td></tr>';
+  const latest=[...records].reverse();
+  recordsBody.innerHTML=latest.map(recordRow).join('')||'<tr><td colspan="9" class="muted">No delivery records</td></tr>';
+}
+async function showAttempts(id){
+  const data=await api(`/api/notifications/${id}/attempts`);
+  attemptsTitle.textContent=`— ${data.notification.chamber_id} ${data.notification.event_type} → ${data.notification.recipient_id}`;
+  attemptsBody.innerHTML=data.attempts.map((a)=>`<tr><td>${a.attempt_number}</td><td>${fmt(a.started_at)}</td><td>${a.succeeded?'<span class="status">succeeded</span>':'<span class="status critical">failed</span>'}</td><td>${a.status_code||'-'}</td><td>${a.duration_ms} ms</td><td>${esc(a.error)}</td></tr>`).join('')||'<tr><td colspan="6" class="muted">No attempts recorded</td></tr>';
+  attemptsPanel.hidden=false;attemptsPanel.scrollIntoView({behavior:'smooth'});
+}
+document.addEventListener('click',async(event)=>{
+  const ledger=event.target.closest('[data-attempts]');const requeue=event.target.closest('[data-reprocess]');
+  try{
+    if(ledger){setMessage(message,'');await showAttempts(ledger.dataset.attempts);}
+    if(requeue){await api(`/api/notifications/${requeue.dataset.reprocess}/reprocess`,{method:'POST'});setMessage(message,'Notification returned to the pending queue.');await load();}
+  }catch(error){setMessage(message,error.message);}
+});
+document.querySelector('#refresh').addEventListener('click',()=>load().catch((e)=>setMessage(message,e.message)));
+load().catch((e)=>setMessage(message,e.message));
+setInterval(()=>load().catch(()=>{}),5000);
+</script></body></html>
